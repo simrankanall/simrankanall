@@ -4,7 +4,7 @@
 - 💞️ I’m looking to collaborate on analysis of data using automation
 - 📫 How to reach me: simran.work0611@gmail.com
 - 😄 Pronouns: she/her
-- ⚡ Fun fact: I read for fun, its a benefit that it helps in life 
+- ⚡ Fun fact: I can recollect accurate information on a topic I have read before (just once) for fun
 
 <!---
 simrankanall/simrankanall is a ✨ special ✨ repository because its `README.md` (this file) appears on your GitHub profile.
