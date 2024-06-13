@@ -1,0 +1,167 @@
+---
+title: "EDA-3"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+  word_document:
+    toc: true
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r}
+ctakes_output<-read.csv("/Users/simrankanal/Downloads/capstone/original files/SECURE_SKIPPY_CTAKES_Output_v1.1.csv")
+#ctakes_output<-read.csv("./Data/SECURE_SKIPPY_CTAKES_Output_v1.1.csv") #Tom's file structure
+
+smaller_ISS_dataset <-read.csv("/Users/simrankanal/Downloads/capstone/original files/SECURE_SKIPPY_flat_dataset_v2.2.csv")
+#smaller_ISS_dataset <- read.csv("./Data/SECURE_SKIPPY_flat_dataset_v2.2.csv") #Tom's file structure
+smaller_ISS_dataset$index_date <- as.Date(smaller_ISS_dataset$index_date, format = "%Y-%m-%d")
+
+
+larger_PT_dataset <- read.csv("~/Downloads/capstone/original files/PT_cLBP_SDOH_v2.1.csv")
+#larger_PT_dataset <- read.csv("./Data/SECURE_PT_cLBP_SDOH_v2.2.csv") #Tom's file structure
+larger_PT_dataset$index_date <- as.Date(larger_PT_dataset$index_date)
+```
+
+
+```{r descriptive table:larger_PT_dataset}
+# Read the larger_PT_dataset
+full_table<- read.csv("~/Downloads/capstone/original files/PT_cLBP_SDOH_v2.1.csv", stringsAsFactors = FALSE)
+
+# Subset the dataset based on specific conditions (if needed)
+sub_table <- full_table[which(full_table$SKIPPY_Patient == 1),]
+
+sub_table <- sub_table[, grep("index_date|date|Date|File_CPT_Codes|File_Final_Diagnosis|File_Procedure|File_Time_of_Discharge|Patient_Death_Date|Date|zip|patient_ID", colnames(sub_table), invert = TRUE)]
+
+this_table <- sub_table
+
+# find categorical variables
+this_table <- cbind(
+                      # this grabs columns that are characters
+                    this_table[,sapply(this_table, is.character)], 
+                      # this grabs columns that have less than or equal to three unique values
+                    this_table[,sapply(this_table, function(x){length(unique(x))<=3}),
+                      drop=FALSE]
+                    )
+
+
+  #remove cols that are completely na
+this_table <- this_table[,colSums(is.na(this_table))<nrow(this_table)]
+
+
+
+#this_table <- colwise(as.factor)(this_table)
+
+```
+##table 1 categorical variables
+```{r}
+formula_str <- paste0("~ factor(`", paste(colnames(this_table), collapse = "`) + factor(`"), "`)")
+#install.packages("table1")
+library(table1)
+table1(as.formula(formula_str), data = this_table)
+```
+
+
+```{r descriptive table:smaller_ISS_dataset}
+# Read the smaller_ISS_dataset
+full_table2 <-read.csv("/Users/simrankanal/Downloads/capstone/original files/SECURE_SKIPPY_flat_dataset_v2.2.csv")
+#smaller_ISS_dataset <- read.csv("./Data/SECURE_SKIPPY_flat_dataset_v2.2.csv") #Tom's file structure
+full_table2$index_date <- as.Date(full_table2$index_date, format = "%Y-%m-%d")
+
+# Subset the dataset based on specific conditions (if needed)
+sub_table2 <- full_table2[which(full_table2$patient_ID == 1),]
+
+sub_table2 <- sub_table2[, grep("index_date", colnames(sub_table), invert = TRUE)]
+
+this_table2 <- sub_table2
+
+# find categorical variables
+this_table2 <- cbind(
+                      # this grabs columns that are characters
+                    this_table2[,sapply(this_table2, is.character)], 
+                      # this grabs columns that have less than or equal to three unique values
+                    this_table2[,sapply(this_table2, function(x){length(unique(x))<=3}),
+                      drop=FALSE]
+                    )
+
+
+  #remove cols that are completely na
+this_table2 <- this_table2[,colSums(is.na(this_table2))<nrow(this_table2)]
+
+
+
+#this_table <- colwise(as.factor)(this_table)
+
+```
+
+```{r}
+anyNA(larger_PT_dataset$date_first_pt) #proof of difference b/w ISS dataset and this demographic table generated from the larger PT datset
+mv<-sum(is.na(larger_PT_dataset$date_first_pt))
+print(mv)
+
+#annotated chronicity info 
+print(smaller_ISS_dataset$Chronicity)
+table(smaller_ISS_dataset$Chronicity)
+```
+
+
+##table 1 categorical variables
+```{r}
+formula_str_2 <- paste0("~ factor(`", paste(colnames(this_table2), collapse = "`) + factor(`"), "`)")
+#install.packages("table1")
+#library(table1)
+#table1(as.formula(formula_str_2), data = this_table2)
+```
+
+```{r}
+#merged_table <- merge(larger_PT_dataset, smaller_ISS_dataset, by = "patient_ID", all = TRUE)
+#print(merged_table)
+#kable(head(merged_table))
+```
+
+```{r}
+#summary(merged_table)
+# Create a data frame with the provided information
+#info_table <- data.frame(
+  #patient_ID = c("skippy_1", "skippy_100"),
+  #zip = c("94107", "94110"),
+  #sex = c("Female", "Male"),
+  #date_first_pt = c("2019-01-08", "2019-01-10"),
+  #date_first_STARTBACK_score = c("2019-11-08", "2018-10-18"),
+  #First_STARTBACK_score = c("HIGH RISK", "Low Risk"),
+  #index_date = c("2019-11-08", "2018-10-18"),
+  #bay_area_region = c("East Bay", "North Bay"))
+
+# Print the table
+#print(info_table)
+
+```
+
+```{r descriptive table:ctakes_output}
+# Read the ctakes_output
+ctakes_output<-read.csv("/Users/simrankanal/Downloads/capstone/original files/SECURE_SKIPPY_CTAKES_Output_v1.1.csv")
+
+# Subset the dataset based on specific conditions (if needed)
+sub_table <- ctakes_output[which(ctakes_output$sex == 1),]
+
+ctakes_output <- ctakes_output[, grep("race|ethnicity|age|bmi", colnames(ctakes_output), invert = TRUE)]
+
+ctakes_output <- cbind(
+  ctakes_output[,sapply(ctakes_output, is.character)],
+  ctakes_output[,sapply(ctakes_output, function(x){length(unique(x)) <= 3}), drop = FALSE]
+)
+
+ctakes_output <- ctakes_output[, colSums(is.na(ctakes_output)) < nrow(ctakes_output)]
+
+ctakes_output[] <- lapply(ctakes_output, as.factor)
+library(knitr)
+kable(ctakes_output)
+
+```
+
+```{r}
+#PT_Sample_Annotated_Patient|COCOA_Social_isolation_family|COCOA_Social_isolation_NA|COCOA_Marital_or_partnership_status_divorced|COCOA_Marital_or_partnership_status_separated|COCOA_Marital_or_partnership_status_widowed|COCOA_Anxiety_anxiety|COCOA_Anxiety_nervous|COCOA_Anxiety_anxious|COCOA_Anxiety_generalized_anxiety_disorder|COCOA_Anxiety_gad|COCOA_Anxiety_history_of_anxiety|COCOA_Anxiety_worried|COCOA_Anxiety_anxiety_disorder|COCOA_Anxiety_panic_attacks|COCOA_Financial_strain_financial_resource_strain|COCOA_Financial_strain_financial|COCOA_Financial_strain_expensive|COCOA_Financial_strain_financial_stressors|COCOA_Financial_strain_finances|COCOA_Financial_strain_unemployed|COCOA_Financial_strain_not_in_a_financial_place|COCOA_Financial_strain_financial_concerns|COCOA_Housing_shelter|COCOA_Housing_homeless|COCOA_Housing_housing_problem|COCOA_Depression_depression|COCOA_Depression_major_depressive_disorder|COCOA_Depression_depressive_symptoms|COCOA_Depression_mdd|COCOA_Depression_dysphoric|COCOA_Depression_depressed|COCOA_Depression_depressed_mood|COCOA_Depression_cymbalta|COCOA_Depression_duloxetine|COCOA_Insurance_status_losing_his_insurance|COCOA_Transportation_transportation|COCOA_Food_food_insecurity|COCOA_Food_hungry|COCOA_Food_hunger|COCOA_Food_intake_significant
+```
