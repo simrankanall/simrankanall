@@ -1,0 +1,146 @@
+---
+title: "Final_SK"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction: BRFSS dataset 
+This research utilizes the Behavioral Risk Factor Surveillance System (BRFSS) dataset, available on Kaggle and uploaded by the Centers for Disease Control and Prevention (CDC), to investigate the relationship between physical activity frequency, education level, and diabetes status among US adults. The dataset is a health-related telephone survey that collects data on preventive health practices, risk behaviors, chronic health conditions, and use of preventive services among adults in the US, with more than 400,000 adult interviews conducted each year. The research question aims to examine the relationship between physical activity frequency and the likelihood of having diabetes among US adults, while controlling for the confounding effect of education level. The hypothesis is that individuals who engage in regular physical activity will have a lower likelihood of having diabetes compared to those who are sedentary or engage in low levels of physical activity, and that education level will moderate this relationship. The motivation for this research is to explore the relationship between physical activity frequency and the likelihood of having diabetes among US adults and to identify whether education level plays a role in this relationship.
+
+```{r}
+#Loading the dataset into R
+load("/Users/simrankanal/Desktop/datbrfss.RData")
+#Opening the data files to check structure 
+str(dat2014brfss)
+sum(is.na(dat2014brfss))
+```
+
+#Since we are focusing on seeing if there is a correlation between Levels of physical health and development of chronic health diseases, specifically diabetes by controlling the demographic variables to check for any confounding effects specifically focusing on education we need to segregate the variables from the 'dat2014brfss' dataset. 
+```{r}
+#Extracting only the physical health, diabetes,education variable from the dat2014brfss dataset
+newdat<- subset(dat2014brfss, select=c(PHYSHLTH,DIABETE3,EDUCA))
+str(newdat) #checking structure 
+sum(is.na(newdat)) #checking for NA values 
+newdat14<- na.omit(newdat) #clearing NA values 
+sum(is.na(newdat14))
+class(newdat14$PHYSHLTH) #since it is a continuous variable, it is our predictor 
+class(newdat14$DIABETE3) # categorical variable, it is our outcome 
+class(newdat14$EDUCA) #categorical variable, confounder and predictor for SVM model 
+```
+
+## Methods
+In order to begin working with the dataset, it was necessary to segregate the variables of focus and potentially transform them. To accomplish this, a histogram was utilized to assess the distribution of the "PHYSHLTH" variable, which is continuous in nature. The resulting histogram indicated that the distribution is positively skewed, with the majority of values clustered towards the lower end and a long tail towards the higher end representing outliers. The presence of outliers suggests that there may be extreme values that differ significantly from the majority of the data, which could potentially impact analysis and conclusions.Additionally, a skewed distribution may require transformation to normalize it and make it suitable for certain statistical tests, although in this case, transformation was not performed to maintain visibility of predictor-outcome correlations.
+
+The output shows summary statistics for three variables - PHYSHLTH, DIABETE3, and EDUCA. PHYSHLTH represents physical health and has a minimum value of 0 and a maximum value of 30. The mean physical health score is 4.354. DIABETE3 is a categorical variable with levels 1 through 6 representing different diabetes levels. The data has 679 controls and 57 cases with diabetes level 2. EDUCA is another categorical variable with levels 1 through 6 representing different levels of education.The output also shows two plots created using ggplot2. The first plot is a histogram of the physical health variable, which is used to check the distribution of the variable since it is continuous. The second plot is a boxplot comparing physical health with diabetes levels. This plot is used to visualize the relationship between physical health and diabetes levels.The output suggests that there is a negative relationship between physical health and diabetes levels. This means that as diabetes levels increase, physical health decreases. Additionally, the histogram shows that physical health is skewed to the right, with a majority of the observations having low levels of physical health. The boxplot comparing physical health with diabetes levels shows a large variation in physical health among different diabetes levels, indicating that there may be other factors that are contributing to the variation in physical health beyond just the presence or absence of diabetes.
+
+```{r}
+#load necessary packages to check distributions 
+library(ggplot2)
+library(dplyr)
+summary(newdat14) # To check distribution
+
+ggplot(newdat14, aes(x=PHYSHLTH)) + 
+  geom_histogram() + 
+  ggtitle("Physical Health") # Using a histogram to check the distribution since continuous variable 
+
+#Boxplot comparing physical activity with diabetes levels 
+ggplot(newdat14, aes(x = DIABETE3, y = PHYSHLTH)) + 
+  geom_boxplot() + 
+  ggtitle("Physical health v/s Diabetes")
+```
+
+
+# Logistic regression model 
+
+The logistic regression algorithm was used in this analysis to model the relationship between physical health, measured by PHYSHLTH, and the likelihood of having diabetes, indicated by the binary response variable DIABETE3, while controlling for other variables. Logistic regression is a suitable method for modeling binary outcomes, and its simplicity and interpretability make it a good choice for initial insights into the relationship between physical activity and diabetes risk. However, one potential limitation of logistic regression is its assumption of a linear relationship between predictor and response variables, which may not hold in reality.
+
+The output (glm1) of the logistic regression model provides information about the coefficients for each variable, including the intercept value and PHYSHLTH coefficient. The results indicate a statistically significant negative relationship between physical health and the likelihood of having diabetes, with the odds of having diabetes decreasing by about 4.6% for every one-unit increase in PHYSHLTH. Controlling for education, a potential confounding variable, further supports this negative relationship.
+
+In addition to the coefficient information, the output also includes goodness of fit measures, such as null deviance, residual deviance, AIC, and Fisher Scoring iterations. These values can be used to assess the model's goodness of fit, which appears to be good based on the significance of the coefficients and goodness of fit measures.
+
+The logistic regression model's ROC curve analysis on the BRFSS 2014 dataset evaluated the relationship between physical health and the development of diabetes while controlling for demographic variables, including education. The AUC value for the ROC curve is 0.6605, indicating moderate accuracy in predicting the development of diabetes based on physical health and demographic variables. While the model's accuracy may not be highly accurate, these results suggest that physical health and certain demographic variables may be predictors of diabetes development.
+
+```{r}
+glm1 <- glm(DIABETE3 ~ PHYSHLTH, family="binomial", data=newdat14) #Fit a logistic regression model (call it `glm1`) using the `newdat14` dataset. Use `Diabetes` as the outcome and physical activity (`PHYSHLTH`) as a single predictor
+summary(glm1) #Use the summary command to examine the fitted model.
+confint(glm1) #Generate the 95% confidence intervals for the `PHYSHLTH` coefficient
+
+#Generate the estimate and 95% confidence interval for the odds-ratio associated with PHYSHLTH.
+exp(coefficients(glm1)["PHYSHLTH"])
+exp(confint(glm1)["PHYSHLTH",])
+# the estimated Odds ratio for physical health is 0.954 
+# the 95% confidence interval for the estimated odds ratio for PHYSHLTH is 0.9470 to 0.961
+
+#Predicting the probabilities of diabetes associated with each of the training observations of Physical Activity. Made a vector of predictions for diabetes based on whether the predictions are above or below 0.5.
+pred14 <- predict(glm1, type="response") ## Generate predicted probabilities
+pred14binary <- ifelse(pred14 > 0.5, "Yes", "No") ## Threshold at 0.5
+
+#scatterplot
+library(ggplot2)
+ggplot(data = newdat14, aes(x = PHYSHLTH, y = DIABETE3)) +
+  geom_point() +
+  labs(x = "Physical Health", y = "Diabetes")
+
+# load the pROC package
+library(pROC)
+
+# predict the probabilities using the logistic regression model
+predictions <- predict(glm1, newdata = newdat14, type = "response")
+
+# calculate the ROC curve
+roc_data <- roc(newdat14$DIABETE3 ~ predictions)
+roc_data
+
+# plot the ROC curve
+plot(roc_data, main = "ROC Curve for Diabetes Prediction", print.thres = c(0.1, 0.2, 0.3, 0.4, 0.5), legacy.axes = TRUE)
+
+```
+
+# SVM model 
+The output presents the results of a Support Vector Machine (SVM) analysis conducted to investigate the relationship between physical health status and diabetes diagnosis, controlling for education as a potential confounder. The dataset was split into training and testing sets, and the SVM model was trained using the training set. The model included physical health status and education as predictor variables, and diabetes diagnosis as the outcome variable.
+
+The SVM analysis showed that physical health status and education were significantly associated with diabetes diagnosis, with an overall accuracy of 83.32%. However, the analysis also showed that the education variable was not significant, which suggests that education may not be a confounder in the relationship between physical health status and diabetes diagnosis.
+
+Overall, the results suggest that physical health status is a strong predictor of diabetes diagnosis, and education may not have a significant impact on this relationship. These findings may have important implications for public health efforts aimed at preventing and managing diabetes. 
+```{r}
+# Load the necessary libraries
+library(e1071)
+library(caret)
+
+# Convert the categorical variables to factors
+newdat14$DIABETE3 <- as.factor(newdat14$DIABETE3)
+newdat14$EDUCA <- as.factor(newdat14$EDUCA)
+
+# Split the dataset into training and testing sets
+set.seed(10)
+training_indices <- createDataPartition(newdat14$DIABETE3, p = 0.7, list = FALSE)
+training_data <- newdat14[training_indices, ]
+testing_data <- newdat14[-training_indices, ]
+# Train the SVM model
+svm_model <- svm(DIABETE3 ~ PHYSHLTH + EDUCA, data = training_data, kernel = "linear")
+svm_model
+# Make predictions on the testing set
+svm_predictions <- predict(svm_model, testing_data)
+# Checking the accuracy of the predictions
+confusionMatrix(svm_predictions, testing_data$DIABETE3)
+```
+
+##Summary
+The BRFSS 2014 dataset contains information about physical health (PHYSHLTH), diabetes status (DIABETE3), and education level (EDUCA). The PHYSHLTH variable is continuous with a minimum value of 0 and a maximum value of 30. The DIABETE3 variable is categorical with levels 1 through 6 representing different diabetes levels. The data has 679 controls and 57 cases with diabetes level 2. The EDUCA variable is also categorical with levels 1 through 6 representing different levels of education.
+
+A histogram was used to assess the distribution of the PHYSHLTH variable, which showed that the distribution is positively skewed with the majority of values clustered towards the lower end and a long tail towards the higher end representing outliers. A boxplot was used to compare physical health with diabetes levels and showed a negative relationship between physical health and diabetes levels. The ROC curve analysis of the logistic regression model showed moderate accuracy in predicting the development of diabetes based on physical health and demographic variables. The SVM analysis showed that physical health status was a strong predictor of diabetes diagnosis, and education may not have a significant impact on this relationship.
+
+The logistic regression model showed a statistically significant negative relationship between physical health and the likelihood of having diabetes, with the odds of having diabetes decreasing by about 4.6% for every one-unit increase in PHYSHLTH. The SVM analysis showed that physical health status and education were significantly associated with diabetes diagnosis, with an overall accuracy of 83.32%. However, the analysis also showed that the education variable was not significant.
+
+##Discussion
+
+The results from the ML algorithms confirmed a negative relationship between physical health and diabetes status. The logistic regression model and SVM analysis both provided evidence for this relationship, with the former offering a simple and interpretable approach, while the latter suggested physical health status was a strong predictor of diabetes diagnosis. However, the moderate accuracy of the ROC curve analysis indicated that other demographic variables may also be important predictors and warrant further investigation. Notably, education did not appear to be a confounding variable in the relationship between physical health and diabetes diagnosis.
+The logistic regression model suggested that increasing PHYSHLTH was associated with decreased odds of diabetes, controlling for education. The SVM analysis provided an overall accuracy of 83.32% for predicting diabetes based on physical health status. The analysis is not without limitations. The dataset used in this analysis was from a survey and may not be representative of the entire population, and the logistic regression model's assumption of a linear relationship may not hold. Additionally, overfitting may have occurred during the SVM analysis, leading to poor performance on new data. Furthermore, the analysis only considered a limited set of variables, and other factors like diet and exercise habits may also play a role in diabetes risk.
+
+In conclusion, this analysis provides evidence supporting the negative relationship between physical health status and diabetes diagnosis.
+
+
+##Thank you for teaching the course Jean! 
