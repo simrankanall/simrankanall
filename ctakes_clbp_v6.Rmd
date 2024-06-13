@@ -1,0 +1,1700 @@
+---
+title: "ctakes_clbp"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+---
+
+```{r setup, include=FALSE}
+
+knitr::opts_chunk$set(echo = TRUE)
+
+library(dplyr)
+library(broom)
+
+
+```
+
+```{r read all files }
+
+ctakes_output<-read.csv("/Users/simrankanal/Downloads/capstone/original files/SECURE_SKIPPY_CTAKES_Output_v1.1.csv")
+
+
+smaller_ISS_dataset <-read.csv("/Users/simrankanal/Downloads/capstone/original files/SECURE_SKIPPY_flat_dataset_v2.2.csv")
+str(smaller_ISS_dataset)
+anyNA(larger_PT_dataset)
+(is.na(larger_PT_dataset$mrn))
+
+smaller_ISS_dataset$index_date <- as.Date(smaller_ISS_dataset$index_date, format = "%Y-%m-%d")
+
+
+larger_PT_dataset <- read.csv("~/Downloads/capstone/original files/PT_cLBP_SDOH_v2.1.csv")
+
+larger_PT_dataset$index_date <- as.Date(larger_PT_dataset$index_date)
+
+
+```
+
+
+# Read files, clean, and featurize diagnoses
+
+```{r get counts for pain codes }
+
+
+######
+# Set maximum chronicity
+######
+
+smaller_ISS_dataset$Chronicity[which(as.numeric(smaller_ISS_dataset$Chronicity) > 66)] <- 66
+
+
+
+#######
+# Convert Dates
+#######
+
+
+
+## fixing note_service_date format from "%m/%d/%Y" to the dash format
+ctakes_output$note_service_date <- gsub('/', '-', ctakes_output$note_service_date)
+
+# Convert to Date class object
+#it is M-D-Y in the csv files but Y-M-D in r 
+ctakes_output$note_service_date <- as.Date(ctakes_output$note_service_date)
+
+
+#######
+# Filter for anything pain related
+#######
+
+ctakes_pain <- ctakes_output[grep("pain", ctakes_output$canon_text, ignore.case = T), ]
+
+
+
+#######
+# Fix Chronicity
+#######
+
+smaller_ISS_dataset$Chronicity[which(smaller_ISS_dataset$Chronicity == "<1")] <- 0.5
+
+#######
+# Fix EHR_Hist
+#######
+
+ehr_hist_cols <- colnames(smaller_ISS_dataset)[grep("EHR_Hist", colnames(smaller_ISS_dataset))]
+
+for(ii in ehr_hist_cols){
+  smaller_ISS_dataset[[ii]][which(is.na(smaller_ISS_dataset[[ii]]))] <- 0
+}
+
+
+#######
+# Merge all columns noe in larger dataset into the larger dataset
+#######
+
+to_merge <- smaller_ISS_dataset[,c("mrn", colnames(smaller_ISS_dataset)[!(colnames(smaller_ISS_dataset) %in% colnames(larger_PT_dataset))])]
+larger_PT_dataset <- merge(larger_PT_dataset, to_merge, by = "mrn", all.x = TRUE)
+
+
+
+
+#######
+#adding mrn counts column 
+#######
+
+
+# Function to count pain diagnosis before index_date for each mrn
+count_pain_before_index <- function(mrn, index_date) {
+  sum(ctakes_pain$mrn == mrn & ctakes_pain$note_service_date <= index_date, na.rm = TRUE)
+}
+
+# Apply the function to each row in smaller_ISS_dataset
+smaller_ISS_dataset$pain_count_before_index <- mapply(count_pain_before_index, 
+                                                      smaller_ISS_dataset$mrn, 
+                                                      smaller_ISS_dataset$index_date)
+
+# Apply the function to each row in larger_PT_dataset
+larger_PT_dataset$pain_count_before_index <- mapply(count_pain_before_index, 
+                                                      larger_PT_dataset$mrn, 
+                                                      larger_PT_dataset$index_date)
+
+
+
+
+# Function to calculate the length of time in pain before index_date for each mrn
+time_in_pain_before_index <- function(mrn, index_date) {
+
+  nona_ctakes_pain <- ctakes_pain[which(!is.na(ctakes_pain$note_service_date)),]
+  
+    # If there are no recorded pain dates before the index date, return 0
+  if(is.na(mrn) || length(which(nona_ctakes_pain$mrn == mrn)) == 0){
+    return(0)
+  }
+  
+  
+  # Filter the pain data for the given MRN and dates before the index date
+  patient_pain_dates <- nona_ctakes_pain[which(nona_ctakes_pain$mrn == mrn),]
+  
+  
+  patient_pain_dates <- patient_pain_dates[which(patient_pain_dates$note_service_date <= index_date),]
+
+    # If there are no recorded pain dates before the index date, return 0
+  if(nrow(patient_pain_dates) == 0){
+    return(0)
+  } else {
+    # Calculate the earliest pain date
+    earliest_pain_date <- min(patient_pain_dates$note_service_date, na.rm = TRUE)
+    # Return the difference in days between the earliest pain date and the index date
+    return(as.numeric(index_date - earliest_pain_date))
+  }
+}
+
+# Apply the function to each row in smaller_ISS_dataset
+smaller_ISS_dataset$time_in_pain_before_index <- mapply(time_in_pain_before_index, 
+                                                        smaller_ISS_dataset$mrn, 
+                                                        smaller_ISS_dataset$index_date)
+
+
+
+# Apply the function to each row in larger_PT_dataset
+larger_PT_dataset$time_in_pain_before_index <- mapply(time_in_pain_before_index, 
+                                                        larger_PT_dataset$mrn, 
+                                                        larger_PT_dataset$index_date)
+
+
+
+
+
+
+# View the result
+
+#summary(as.factor(smaller_ISS_dataset$pain_count_before_index))
+#summary(as.factor(larger_PT_dataset$pain_count_before_index))
+
+#head(smaller_ISS_dataset)
+#head(larger_PT_dataset)
+
+
+
+
+#######
+#adding time since first diagnosis
+#######
+
+# Step 1: Find the first diagnosis date for each patient, excluding rows where mrn is NA
+# Remove rows where 'mrn' is NA
+clean_data <- ctakes_output[!is.na(ctakes_output$mrn), ]
+clean_data <- clean_data[!is.na(clean_data$note_service_date), ]
+
+# Initialize a new data frame to store the results
+first_diagnosis_date <- data.frame(mrn = integer(0), first_diagnosis_date = as.Date(character()))
+
+# Loop through each unique MRN
+for (mrn in unique(clean_data$mrn)) {
+  # Extract the rows for the current MRN
+  patient_data <- clean_data[clean_data$mrn == mrn, ]
+  
+  # Find the earliest 'note_service_date' for the current MRN
+  earliest_date <- min(patient_data$note_service_date, na.rm = TRUE)
+  
+  # Append the MRN and the earliest date to the results data frame
+  first_diagnosis_date <- rbind(first_diagnosis_date, data.frame(mrn = mrn, first_diagnosis_date = earliest_date))
+}
+
+
+
+# Step 2: Calculate the time difference for each patient in smaller_ISS_dataset
+smaller_ISS_dataset <- merge(smaller_ISS_dataset, first_diagnosis_date, by = "mrn", all.x = TRUE)
+larger_PT_dataset <- merge(larger_PT_dataset, first_diagnosis_date, by = "mrn", all.x = TRUE)
+
+# Create a new column with the time difference in days
+# (index_date - first_diagnosis_date)
+smaller_ISS_dataset$days_since_first_diagnosis <- as.numeric(difftime(smaller_ISS_dataset$index_date, 
+                                                                      smaller_ISS_dataset$first_diagnosis_date,
+                                                                      units = "days"))
+
+larger_PT_dataset$days_since_first_diagnosis <- as.numeric(difftime(larger_PT_dataset$index_date, 
+                                                                      larger_PT_dataset$first_diagnosis_date,
+                                                                      units = "days"))
+
+# Step 3: this makes it so it's only counting the past, not the future:
+smaller_ISS_dataset$days_since_first_diagnosis[which(smaller_ISS_dataset$days_since_first_diagnosis < 0)] <- 0
+larger_PT_dataset$days_since_first_diagnosis[which(larger_PT_dataset$days_since_first_diagnosis < 0)] <- 0
+
+
+
+#write.csv(ctakes_clbp, "~/Downloads/capstone/ctakes_cLBP.csv")
+
+
+```
+
+
+
+
+
+
+
+
+
+# Run regressions
+
+
+
+
+```{r regressions }
+
+
+
+skippy_EHR_features<- c("age", "sex", "Anxiety", "Depression", "Heart_disease",
+                    "High_blood_pressure", "BMI",
+                    #"Primary.Back.Pain", 
+                    "opioid_Curr", 
+                    #"opioid_Pre", 
+                    #"Num_Visits", "Num_Pain_Sites", 
+                    "ethnicity_Hispanic", 
+                    "race_Asian", "race_White_Caucasian", "race_Black_African", 
+                    "race_other", "Smoking.Status", "Diabetes",
+                    "angina","asthama",
+                    "cerebral_vascular",
+                    "chronic_fatigue","heart_failure","pulmonary_disease","cocaine_abuse",
+                    "connective_tissue","copd","dementia","dorsalgia_unspecified","dorsopathy",
+                    "endometriosis","fibromyalgia","heart_attack","irritable_bowel",
+                    "kidney_renal","leukemia_lymphoma","liver_disease","migrane",
+                    "osteoporosis","dorsalgia",
+                    "Peptic.ulcer.disease","Peripheral.vascular.disease","Polymalgia.rheumatica",
+                    "Postlaminectomy.syndrome.not.otherwise.classified","PTSD",
+                    "Radiculopathy.lumbar.region","Radiculopathy.lumbosacral.region",
+                    "Rheumatoid.arthritis",
+                    "Stroke","Tension.headache","TIA","TMJ.disorder",
+                     "Insurance_Type_MediCal",
+                    "Insurance_Type_Medicare",
+                    "ADI_STATERNK",
+                      "cancer", "pain_count_before_index", "time_in_pain_before_index"
+                     , colnames(smaller_ISS_dataset)[grep("EHR_Hist",colnames(smaller_ISS_dataset))]
+
+                    )
+
+
+
+# Step 1: Identify columns to use in machine learning
+#columns_for_pred <- colnames(smaller_ISS_dataset)[grep("pain_count_before_index|age",
+columns_for_pred <- colnames(smaller_ISS_dataset)[which(colnames(smaller_ISS_dataset) %in% skippy_EHR_features) ]
+
+# Step 2: Perform linear regressions and Step 3: Save results in a table
+regression_results <- list()
+
+to_regress <- smaller_ISS_dataset
+
+for (col in columns_for_pred) {
+  
+    #grab just the two columns
+  this_reg_table <- to_regress[,c("Chronicity", col)]
+  this_reg_table <- this_reg_table[complete.cases(this_reg_table),]
+  
+    #perform the regression
+  regression_formula <- as.formula(paste("Chronicity ~", col))
+  model <- lm(regression_formula, data = this_reg_table)
+    
+    #save results to list
+  regression_results[[col]] <- tidy(model)
+}
+
+# Convert the list of regression results to a data frame
+regression_results_df <- data.frame(do.call(rbind, regression_results))
+regression_results_df <- regression_results_df[grep("Intercept", regression_results_df$term, invert = TRUE),]
+
+```
+
+
+
+# Regression results
+
+
+```{r reg res }
+# View the results
+knitr::kable(regression_results_df[order(regression_results_df$p.value),])
+
+```
+
+
+# Multivariate regressions 
+
+
+```{r mreg res }
+
+
+
+
+# Step 1: Identify columns to use in machine learning
+#columns_for_pred <- colnames(smaller_ISS_dataset)[grep("pain_count_before_index|age",
+columns_for_pred <- colnames(smaller_ISS_dataset)[which(colnames(smaller_ISS_dataset) %in% skippy_EHR_features) ]
+
+outcome_columns <- c("Chronicity","UTILIZATION_num_hospitalizations_or_ED_visits", "PROMIS_Physical_standardScore_BL")
+
+to_pred <- smaller_ISS_dataset[,c(outcome_columns, columns_for_pred)]
+
+to_pred <- to_pred[which(to_pred$Chronicity != "NA"),]
+
+
+
+# make chronicity a linear variable
+to_pred$Chronicity <- gsub("Chronicity", "", to_pred$Chronicity)
+to_pred$Chronicity <- as.numeric(to_pred$Chronicity)
+
+# Step 2: Perform linear regressions and Step 3: Save results in a table
+regression_results <- list()
+
+for (out_col in outcome_columns) {
+  
+    #remove outcome columns
+  to_pred_no_outcomes <- to_pred[,!(colnames(to_pred) %in% 
+                                      outcome_columns[which(outcome_columns != out_col)]
+                                      )]
+  
+    #perform the regression
+  regression_formula <- as.formula(paste0(out_col, " ~ ."))
+  model <- lm(regression_formula, data = to_pred_no_outcomes)
+    
+    #save results to list
+  regression_results[[out_col]] <- tidy(model)
+}
+
+
+for (out_col in outcome_columns) {
+  print(out_col)
+  
+  print(knitr::kable(regression_results[[out_col]]))
+
+}
+
+
+
+
+```
+
+
+
+
+# Regressions for chronicity_dis on outcomes
+
+
+```{r Regressions for chronicity_dis on outcomes }
+
+
+
+
+# Step 1: Identify columns to use in machine learning
+columns_for_pred <- colnames(smaller_ISS_dataset)[grep("Chronicity_dis", colnames(smaller_ISS_dataset))]
+
+outcome_columns <- c("PROMIS_Physical_standardScore_BL", colnames(smaller_ISS_dataset)[grep("UTILIZATION", colnames(smaller_ISS_dataset))])
+
+to_pred <- smaller_ISS_dataset[,c(outcome_columns, columns_for_pred)]
+
+to_pred <- to_pred[which(to_pred$Chronicity_dis != "NA"),]
+
+
+to_pred <- to_pred[which(to_pred$Chronicity_dis != "NA"),]
+
+# Fix names:
+to_pred$Chronicity_dis <- paste0("Chronicity ",to_pred$Chronicity_dis)
+to_pred$Chronicity_dis <- gsub("-", " to ", to_pred$Chronicity_dis)
+to_pred$Chronicity_dis <- gsub(" ", "_", to_pred$Chronicity_dis)
+
+
+
+# This groups anything 3-12 months
+ind <- which(to_pred$Chronicity_dis == "Chronicity_3_to_6")
+ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_6_to_12"), ind))
+to_pred$Chronicity_dis[which(1:length(to_pred$Chronicity_dis) %in% ind)] <- "Chronicity_3_to_12"
+
+
+# This groups anything after 2 years into a single category
+ind <- which(to_pred$Chronicity_dis == "Chronicity_0_to_3")
+ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_3_to_12"), ind))
+ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_12_to_24"), ind))
+to_pred$Chronicity_dis[!(1:length(to_pred$Chronicity_dis) %in% ind)] <- "Chronicity_Greater_Than_2y"
+
+
+if(FALSE){
+  # This groups anything 0-12 months
+  ind <- which(to_pred$Chronicity_dis == "Chronicity_0_to_3")
+  ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_3_to_12"), ind))
+  to_pred$Chronicity_dis[which(1:length(to_pred$Chronicity_dis) %in% ind)] <- "Chronicity_0_to_12"
+}
+
+# Ensure Chronicity_dis is a factor
+to_pred$Chronicity_dis <- as.factor(to_pred$Chronicity_dis)
+
+
+# Step 2: Perform linear regressions and Step 3: Save results in a table
+regression_results <- list()
+
+for (out_col in outcome_columns) {
+  
+    #remove outcome columns
+  to_pred_no_outcomes <- to_pred[,!(colnames(to_pred) %in% 
+                                      outcome_columns[which(outcome_columns != out_col)]
+                                      )]
+  
+    #perform the regression
+  regression_formula <- as.formula(paste0(out_col, " ~ ."))
+  model <- lm(regression_formula, data = to_pred_no_outcomes)
+    
+    #save results to list
+  regression_results[[out_col]] <- tidy(model)
+}
+
+
+for (out_col in outcome_columns) {
+  print(out_col)
+  
+  print(knitr::kable(regression_results[[out_col]]))
+
+}
+
+
+
+
+```
+
+
+
+
+# Regressions for chronicity_dis on outcomes (rebinarized)
+
+
+```{r Regressions for chronicity_dis on outcomes rebin }
+
+
+
+
+# Step 1: Identify columns to use in machine learning
+columns_for_pred <- colnames(smaller_ISS_dataset)[grep("Chronicity_dis", colnames(smaller_ISS_dataset))]
+
+outcome_columns <- c("PROMIS_Physical_standardScore_BL", colnames(smaller_ISS_dataset)[grep("UTILIZATION", colnames(smaller_ISS_dataset))])
+
+to_pred <- smaller_ISS_dataset[,c(outcome_columns, columns_for_pred)]
+
+to_pred <- to_pred[which(to_pred$Chronicity_dis != "NA"),]
+
+
+to_pred <- to_pred[which(to_pred$Chronicity_dis != "NA"),]
+
+# Fix names:
+to_pred$Chronicity_dis <- paste0("Chronicity ",to_pred$Chronicity_dis)
+to_pred$Chronicity_dis <- gsub("-", " to ", to_pred$Chronicity_dis)
+to_pred$Chronicity_dis <- gsub(" ", "_", to_pred$Chronicity_dis)
+
+
+
+# This groups anything 3-12 months
+ind <- which(to_pred$Chronicity_dis == "Chronicity_3_to_6")
+ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_6_to_12"), ind))
+to_pred$Chronicity_dis[which(1:length(to_pred$Chronicity_dis) %in% ind)] <- "Chronicity_3_to_12"
+
+
+# This groups anything after 2 years into a single category
+ind <- which(to_pred$Chronicity_dis == "Chronicity_0_to_3")
+ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_3_to_12"), ind))
+ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_12_to_24"), ind))
+to_pred$Chronicity_dis[!(1:length(to_pred$Chronicity_dis) %in% ind)] <- "Chronicity_Greater_Than_2y"
+
+
+if(TRUE){
+  # This groups anything 0-12 months
+  ind <- which(to_pred$Chronicity_dis == "Chronicity_0_to_3")
+  ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_3_to_12"), ind))
+  to_pred$Chronicity_dis[which(1:length(to_pred$Chronicity_dis) %in% ind)] <- "Chronicity_0_to_12"
+  
+  #this group 12+
+  ind <- which(to_pred$Chronicity_dis == "Chronicity_12_to_24")
+  ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_Greater_Than_2y"), ind))
+  to_pred$Chronicity_dis[which(1:length(to_pred$Chronicity_dis) %in% ind)] <- "Chronicity_Greater_Than_1y"
+}
+
+# Ensure Chronicity_dis is a factor
+to_pred$Chronicity_dis <- as.factor(to_pred$Chronicity_dis)
+
+
+# Step 2: Perform linear regressions and Step 3: Save results in a table
+regression_results <- list()
+
+for (out_col in outcome_columns) {
+  
+    #remove outcome columns
+  to_pred_no_outcomes <- to_pred[,!(colnames(to_pred) %in% 
+                                      outcome_columns[which(outcome_columns != out_col)]
+                                      )]
+  
+    #perform the regression
+  regression_formula <- as.formula(paste0(out_col, " ~ ."))
+  model <- lm(regression_formula, data = to_pred_no_outcomes)
+    
+    #save results to list
+  regression_results[[out_col]] <- tidy(model)
+}
+
+
+for (out_col in outcome_columns) {
+  print(out_col)
+  
+  print(knitr::kable(regression_results[[out_col]]))
+
+}
+
+
+
+
+```
+
+
+
+
+# Regressions for chronicity_dis on outcomes (rebinarized again)
+
+
+```{r Regressions for chronicity_dis on outcomes rebin again }
+
+
+
+
+# Step 1: Identify columns to use in machine learning
+columns_for_pred <- colnames(smaller_ISS_dataset)[grep("Chronicity_dis", colnames(smaller_ISS_dataset))]
+
+outcome_columns <- c("PROMIS_Physical_standardScore_BL", colnames(smaller_ISS_dataset)[grep("UTILIZATION", colnames(smaller_ISS_dataset))])
+
+to_pred <- smaller_ISS_dataset[,c(outcome_columns, columns_for_pred)]
+
+to_pred <- to_pred[which(to_pred$Chronicity_dis != "NA"),]
+
+
+to_pred <- to_pred[which(to_pred$Chronicity_dis != "NA"),]
+
+# Fix names:
+to_pred$Chronicity_dis <- paste0("Chronicity ",to_pred$Chronicity_dis)
+to_pred$Chronicity_dis <- gsub("-", " to ", to_pred$Chronicity_dis)
+to_pred$Chronicity_dis <- gsub(" ", "_", to_pred$Chronicity_dis)
+
+
+
+# This groups anything 3-12 months
+ind <- which(to_pred$Chronicity_dis == "Chronicity_3_to_6")
+ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_6_to_12"), ind))
+to_pred$Chronicity_dis[which(1:length(to_pred$Chronicity_dis) %in% ind)] <- "Chronicity_3_to_12"
+
+
+# This groups anything after 2 years into a single category
+ind <- which(to_pred$Chronicity_dis == "Chronicity_0_to_3")
+ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_3_to_12"), ind))
+ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_12_to_24"), ind))
+to_pred$Chronicity_dis[!(1:length(to_pred$Chronicity_dis) %in% ind)] <- "Chronicity_Greater_Than_2y"
+
+
+if(TRUE){
+
+  #this group 3+
+  ind <- which(to_pred$Chronicity_dis == "Chronicity_12_to_24")
+  ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_3_to_12"), ind))
+  ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_Greater_Than_2y"), ind))
+  to_pred$Chronicity_dis[which(1:length(to_pred$Chronicity_dis) %in% ind)] <- "Chronicity_Greater_Than_3m"
+}
+
+# Ensure Chronicity_dis is a factor
+to_pred$Chronicity_dis <- as.factor(to_pred$Chronicity_dis)
+
+
+# Step 2: Perform linear regressions and Step 3: Save results in a table
+regression_results <- list()
+
+for (out_col in outcome_columns) {
+  
+    #remove outcome columns
+  to_pred_no_outcomes <- to_pred[,!(colnames(to_pred) %in% 
+                                      outcome_columns[which(outcome_columns != out_col)]
+                                      )]
+  
+    #perform the regression
+  regression_formula <- as.formula(paste0(out_col, " ~ ."))
+  model <- lm(regression_formula, data = to_pred_no_outcomes)
+    
+    #save results to list
+  regression_results[[out_col]] <- tidy(model)
+}
+
+
+for (out_col in outcome_columns) {
+  print(out_col)
+  
+  print(knitr::kable(regression_results[[out_col]]))
+
+}
+
+
+
+
+```
+
+
+
+
+
+# Regressions for chronicity (no dis) on outcomes
+
+
+```{r Regressions for chronicity on outcomes }
+
+
+
+
+# Step 1: Identify columns to use in machine learning
+columns_for_pred <- colnames(smaller_ISS_dataset)[grep("Chronicity$", colnames(smaller_ISS_dataset))]
+
+outcome_columns <- c("PROMIS_Physical_standardScore_BL", colnames(smaller_ISS_dataset)[grep("UTILIZATION", colnames(smaller_ISS_dataset))])
+
+to_pred <- smaller_ISS_dataset[,c(outcome_columns, columns_for_pred)]
+
+to_pred <- to_pred[which(to_pred$Chronicity != "NA"),]
+
+#make chronicity numeric
+to_pred$Chronicity <- as.numeric(gsub("Chronicity","", to_pred$Chronicity))
+
+
+# Step 2: Perform linear regressions and Step 3: Save results in a table
+regression_results <- list()
+
+for (out_col in outcome_columns) {
+  
+    #remove outcome columns
+  to_pred_no_outcomes <- to_pred[,!(colnames(to_pred) %in% 
+                                      outcome_columns[which(outcome_columns != out_col)]
+                                      )]
+  
+    #perform the regression
+  regression_formula <- as.formula(paste0(out_col, " ~ ."))
+  model <- lm(regression_formula, data = to_pred_no_outcomes)
+    
+    #save results to list
+  regression_results[[out_col]] <- tidy(model)
+}
+
+
+for (out_col in outcome_columns) {
+  print(out_col)
+  
+  print(knitr::kable(regression_results[[out_col]]))
+
+}
+
+
+
+
+```
+
+
+
+
+
+
+# Perform machine learning
+
+
+```{r Machine Learning }
+
+
+# Install and load necessary packages
+#install.packages("caret")
+#install.packages("pROC")
+library(caret)
+library(pROC)
+
+# Step 1: Identify columns to use in machine learning
+#columns_for_pred <- colnames(smaller_ISS_dataset)[grep("pain_count_before_index|age",
+columns_for_pred <- colnames(smaller_ISS_dataset)[which(colnames(smaller_ISS_dataset) %in% skippy_EHR_features) ]
+
+
+to_pred <- smaller_ISS_dataset[,c("Chronicity_dis", columns_for_pred)]
+
+to_pred <- to_pred[which(to_pred$Chronicity_dis != "NA"),]
+
+# Fix names:
+to_pred$Chronicity_dis <- paste0("Chronicity ",to_pred$Chronicity_dis)
+to_pred$Chronicity_dis <- gsub("-", " to ", to_pred$Chronicity_dis)
+to_pred$Chronicity_dis <- gsub(" ", "_", to_pred$Chronicity_dis)
+
+
+
+# This groups anything 3-12 months
+ind <- which(to_pred$Chronicity_dis == "Chronicity_3_to_6")
+ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_6_to_12"), ind))
+to_pred$Chronicity_dis[which(1:length(to_pred$Chronicity_dis) %in% ind)] <- "Chronicity_3_to_12"
+
+
+# This groups anything after 2 years into a single category
+ind <- which(to_pred$Chronicity_dis == "Chronicity_0_to_3")
+ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_3_to_12"), ind))
+ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_12_to_24"), ind))
+to_pred$Chronicity_dis[!(1:length(to_pred$Chronicity_dis) %in% ind)] <- "Chronicity_Greater_Than_2y"
+
+
+
+# Ensure Chronicity_dis is a factor
+to_pred$Chronicity_dis <- as.factor(to_pred$Chronicity_dis)
+
+
+# Handle NA values (you might want to exclude or impute them)
+to_pred <- na.omit(to_pred)
+
+# Set up cross-validation
+set.seed(123)  # for reproducibility
+fitControl <- trainControl(method = "repeatedcv", number = 10, repeats = 1, classProbs = TRUE, summaryFunction = multiClassSummary)
+
+# Train the Random Forest Model
+rf_model <- train(Chronicity_dis ~ ., data = to_pred, method = "rf", trControl = fitControl, metric = "AUC")
+
+# Predict on the same dataset (or separate test data if available)
+rf_predictions <- predict(rf_model, to_pred, type = "prob")
+
+
+
+
+# Calculate AUC for each category
+auc_results <- sapply(levels(to_pred$Chronicity_dis), function(x) {
+  roc(response = to_pred$Chronicity_dis, predictor = rf_predictions[, x])$auc
+})
+
+
+# Extracting feature importance
+importance <- varImp(rf_model, scale = FALSE)
+
+print("AUCs:")
+print(auc_results)
+
+
+# Viewing the importance
+print("Variable Importance:")
+print(importance)
+
+
+
+```
+
+# Machine learning results
+
+```{r ML results }
+
+# Print AUC results
+knitr::kable(auc_results)
+
+
+```
+
+# ROC Plots
+
+```{r ROC plots }
+
+# Plot ROC Curves
+par(mfrow=c(2,4))  # Adjust based on the number of levels in Chronicity_dis
+for (x in levels(to_pred$Chronicity_dis)) {
+  roc_obj <- roc(response = to_pred$Chronicity_dis, predictor = rf_predictions[, x])
+  print(plot(roc_obj, main = paste("ROC for", x)))
+}
+
+
+
+
+
+```
+
+
+
+
+
+# Perform machine learning only 0-3
+
+
+```{r Machine Learning only 0-3 }
+
+
+# Install and load necessary packages
+#install.packages("caret")
+#install.packages("pROC")
+library(caret)
+library(pROC)
+
+
+# Step 1: Identify columns to use in machine learning
+#columns_for_pred <- colnames(smaller_ISS_dataset)[grep("pain_count_before_index|age",
+columns_for_pred <- colnames(smaller_ISS_dataset)[which(colnames(smaller_ISS_dataset) %in% skippy_EHR_features) ]
+
+to_pred <- smaller_ISS_dataset[,c("Chronicity_dis", columns_for_pred), drop=FALSE]
+
+to_pred <- to_pred[which(to_pred$Chronicity_dis != "NA"),]
+
+# Fix names:
+to_pred$Chronicity_dis <- paste0("Chronicity ",to_pred$Chronicity_dis)
+to_pred$Chronicity_dis <- gsub("-", " to ", to_pred$Chronicity_dis)
+to_pred$Chronicity_dis <- gsub(" ", "_", to_pred$Chronicity_dis)
+
+
+
+# This groups anything 3-12 months
+ind <- which(to_pred$Chronicity_dis == "Chronicity_3_to_6")
+ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_6_to_12"), ind))
+to_pred$Chronicity_dis[which(1:length(to_pred$Chronicity_dis) %in% ind)] <- "Chronicity_3_to_12"
+
+
+# This groups anything after 2 years into a single category
+ind <- which(to_pred$Chronicity_dis == "Chronicity_0_to_3")
+ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_3_to_12"), ind))
+ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_12_to_24"), ind))
+to_pred$Chronicity_dis[!(1:length(to_pred$Chronicity_dis) %in% ind)] <- "Chronicity_Greater_Than_2y"
+
+
+if(TRUE){
+
+  #this group 3+
+  ind <- which(to_pred$Chronicity_dis == "Chronicity_3_to_12")
+  ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_12_to_24"), ind))
+  ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_Greater_Than_2y"), ind))
+  to_pred$Chronicity_dis[which(1:length(to_pred$Chronicity_dis) %in% ind)] <- "Chronicity_Greater_Than_3mo"
+}
+
+
+# Ensure Chronicity_dis is a factor
+to_pred$Chronicity_dis <- as.factor(to_pred$Chronicity_dis)
+
+
+# Handle NA values (you might want to exclude or impute them)
+to_pred <- na.omit(to_pred)
+
+# Set up cross-validation
+set.seed(123)  # for reproducibility
+fitControl <- trainControl(method = "repeatedcv", number = 10, repeats = 1, classProbs = TRUE, summaryFunction = twoClassSummary)
+
+# Train the Random Forest Model
+rf_model <- train(Chronicity_dis ~ ., data = to_pred, method = "rf", trControl = fitControl, metric = "AUC")
+
+# Predict on the same dataset (or separate test data if available)
+rf_predictions <- predict(rf_model, to_pred, type = "prob")
+
+
+
+
+# Calculate AUC for each category
+auc_results <- sapply(levels(to_pred$Chronicity_dis), function(x) {
+  roc(response = to_pred$Chronicity_dis, predictor = rf_predictions[, x])$auc
+})
+
+# Extracting feature importance
+importance <- varImp(rf_model, scale = FALSE)
+
+
+```
+
+# Machine learning results only 0-3
+
+```{r ML results only 0-3  }
+
+# Print AUC results
+knitr::kable(auc_results)
+
+
+```
+
+# Machine learning variable importance only 0-3
+
+```{r ML results importance only 0-3  }
+
+# Print AUC results
+print(importance)
+
+
+```
+
+# ROC Plots only 0-3
+
+```{r ROC plots only 0-3 }
+
+# Plot ROC Curves
+par(mfrow=c(2,4))  # Adjust based on the number of levels in Chronicity_dis
+for (x in levels(to_pred$Chronicity_dis)) {
+  roc_obj <- roc(response = to_pred$Chronicity_dis, predictor = rf_predictions[, x])
+  print(plot(roc_obj, main = paste("ROC for", x)))
+}
+
+
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Perform machine learning only 0-12
+
+
+```{r Machine Learning only 0-12 }
+
+
+# Install and load necessary packages
+#install.packages("caret")
+#install.packages("pROC")
+library(caret)
+library(pROC)
+
+
+# Step 1: Identify columns to use in machine learning
+#columns_for_pred <- colnames(smaller_ISS_dataset)[grep("pain_count_before_index|age",
+columns_for_pred <- colnames(smaller_ISS_dataset)[which(colnames(smaller_ISS_dataset) %in% skippy_EHR_features) ]
+
+
+to_pred <- smaller_ISS_dataset[,c("Chronicity_dis", columns_for_pred), drop=FALSE]
+
+to_pred <- to_pred[which(to_pred$Chronicity_dis != "NA"),]
+
+# Fix names:
+to_pred$Chronicity_dis <- paste0("Chronicity ",to_pred$Chronicity_dis)
+to_pred$Chronicity_dis <- gsub("-", " to ", to_pred$Chronicity_dis)
+to_pred$Chronicity_dis <- gsub(" ", "_", to_pred$Chronicity_dis)
+
+
+
+# This groups anything 3-12 months
+ind <- which(to_pred$Chronicity_dis == "Chronicity_3_to_6")
+ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_6_to_12"), ind))
+to_pred$Chronicity_dis[which(1:length(to_pred$Chronicity_dis) %in% ind)] <- "Chronicity_3_to_12"
+
+
+# This groups anything after 2 years into a single category
+ind <- which(to_pred$Chronicity_dis == "Chronicity_0_to_3")
+ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_3_to_12"), ind))
+ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_12_to_24"), ind))
+to_pred$Chronicity_dis[!(1:length(to_pred$Chronicity_dis) %in% ind)] <- "Chronicity_Greater_Than_2y"
+
+
+if(TRUE){
+
+  #this group 0-12
+  ind <- which(to_pred$Chronicity_dis == "Chronicity_0_to_3")
+  ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_3_to_12"), ind))
+  to_pred$Chronicity_dis[which(1:length(to_pred$Chronicity_dis) %in% ind)] <- "Chronicity_Greater_0_to_12"
+  
+  #this group 12+
+  ind <- which(to_pred$Chronicity_dis == "Chronicity_12_to_24")
+  ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_Greater_Than_2y"), ind))
+  to_pred$Chronicity_dis[which(1:length(to_pred$Chronicity_dis) %in% ind)] <- "Chronicity_Greater_Than_1yr"
+}
+
+
+# Ensure Chronicity_dis is a factor
+to_pred$Chronicity_dis <- as.factor(to_pred$Chronicity_dis)
+
+
+# Handle NA values (you might want to exclude or impute them)
+to_pred <- na.omit(to_pred)
+
+# Set up cross-validation
+set.seed(123)  # for reproducibility
+fitControl <- trainControl(method = "repeatedcv", number = 10, repeats = 1, classProbs = TRUE, summaryFunction = twoClassSummary)
+
+# Train the Random Forest Model
+rf_model <- train(Chronicity_dis ~ ., data = to_pred, method = "rf", trControl = fitControl, metric = "AUC")
+
+# Predict on the same dataset (or separate test data if available)
+rf_predictions <- predict(rf_model, to_pred, type = "prob")
+
+
+
+
+# Calculate AUC for each category
+auc_results <- sapply(levels(to_pred$Chronicity_dis), function(x) {
+  roc(response = to_pred$Chronicity_dis, predictor = rf_predictions[, x])$auc
+})
+
+# Extracting feature importance
+importance <- varImp(rf_model, scale = FALSE)
+
+
+```
+
+# Machine learning results only 0-12
+
+```{r ML results only 0-12  }
+
+# Print AUC results
+knitr::kable(auc_results)
+
+
+```
+
+# Machine learning variable importance only 0-12
+
+```{r ML results importance only 0-12  }
+
+# Print AUC results
+print(importance)
+
+
+```
+
+# ROC Plots only 0-12
+
+```{r ROC plots only 0-12 }
+
+# Plot ROC Curves
+par(mfrow=c(2,4))  # Adjust based on the number of levels in Chronicity_dis
+for (x in levels(to_pred$Chronicity_dis)) {
+  roc_obj <- roc(response = to_pred$Chronicity_dis, predictor = rf_predictions[, x])
+  print(plot(roc_obj, main = paste("ROC for", x)))
+}
+
+
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Perform machine learning only 0-3 w/o NLP
+
+
+```{r Machine Learning only 0-3 w/o NLP }
+
+
+# Install and load necessary packages
+#install.packages("caret")
+#install.packages("pROC")
+library(caret)
+library(pROC)
+
+
+# Step 1: Identify columns to use in machine learning
+#columns_for_pred <- colnames(smaller_ISS_dataset)[grep("pain_count_before_index|age",
+columns_for_pred <- colnames(smaller_ISS_dataset)[which(colnames(smaller_ISS_dataset) %in% skippy_EHR_features) ]
+
+columns_for_pred <- columns_for_pred[grep("time_in_pain|pain_count", columns_for_pred, invert = T)]
+
+
+to_pred <- smaller_ISS_dataset[,c("Chronicity_dis", columns_for_pred), drop=FALSE]
+
+to_pred <- to_pred[which(to_pred$Chronicity_dis != "NA"),]
+
+# Fix names:
+to_pred$Chronicity_dis <- paste0("Chronicity ",to_pred$Chronicity_dis)
+to_pred$Chronicity_dis <- gsub("-", " to ", to_pred$Chronicity_dis)
+to_pred$Chronicity_dis <- gsub(" ", "_", to_pred$Chronicity_dis)
+
+
+
+# This groups anything 3-12 months
+ind <- which(to_pred$Chronicity_dis == "Chronicity_3_to_6")
+ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_6_to_12"), ind))
+to_pred$Chronicity_dis[which(1:length(to_pred$Chronicity_dis) %in% ind)] <- "Chronicity_3_to_12"
+
+
+# This groups anything after 2 years into a single category
+ind <- which(to_pred$Chronicity_dis == "Chronicity_0_to_3")
+ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_3_to_12"), ind))
+ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_12_to_24"), ind))
+to_pred$Chronicity_dis[!(1:length(to_pred$Chronicity_dis) %in% ind)] <- "Chronicity_Greater_Than_2y"
+
+
+if(TRUE){
+
+  #this group 3+
+  ind <- which(to_pred$Chronicity_dis == "Chronicity_3_to_12")
+  ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_12_to_24"), ind))
+  ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_Greater_Than_2y"), ind))
+  to_pred$Chronicity_dis[which(1:length(to_pred$Chronicity_dis) %in% ind)] <- "Chronicity_Greater_Than_3mo"
+}
+
+
+# Ensure Chronicity_dis is a factor
+to_pred$Chronicity_dis <- as.factor(to_pred$Chronicity_dis)
+
+
+# Handle NA values (you might want to exclude or impute them)
+to_pred <- na.omit(to_pred)
+
+# Set up cross-validation
+set.seed(123)  # for reproducibility
+fitControl <- trainControl(method = "repeatedcv", number = 10, repeats = 1, classProbs = TRUE, summaryFunction = twoClassSummary)
+
+# Train the Random Forest Model
+rf_model <- train(Chronicity_dis ~ ., data = to_pred, method = "rf", trControl = fitControl, metric = "AUC")
+
+# Predict on the same dataset (or separate test data if available)
+rf_predictions <- predict(rf_model, to_pred, type = "prob")
+
+
+
+
+# Calculate AUC for each category
+auc_results <- sapply(levels(to_pred$Chronicity_dis), function(x) {
+  roc(response = to_pred$Chronicity_dis, predictor = rf_predictions[, x])$auc
+})
+
+# Extracting feature importance
+importance <- varImp(rf_model, scale = FALSE)
+
+
+```
+
+# Machine learning results only 0-3 w/o NLP
+
+```{r ML results only 0-3 w/o NLP  }
+
+# Print AUC results
+knitr::kable(auc_results)
+
+
+```
+
+# Machine learning variable importance only 0-3 w/o NLP
+
+```{r ML results importance only 0-3 w/o NLP }
+
+# Print AUC results
+print(importance)
+
+
+```
+
+# ROC Plots only 0-3
+
+```{r ROC plots only 0-3 w/o NLP }
+
+# Plot ROC Curves
+par(mfrow=c(2,4))  # Adjust based on the number of levels in Chronicity_dis
+for (x in levels(to_pred$Chronicity_dis)) {
+  roc_obj <- roc(response = to_pred$Chronicity_dis, predictor = rf_predictions[, x])
+  print(plot(roc_obj, main = paste("ROC for", x)))
+}
+
+
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Perform machine learning only 0-12 w/o NLP
+
+
+```{r Machine Learning only 0-12 w/o NLP }
+
+
+# Install and load necessary packages
+#install.packages("caret")
+#install.packages("pROC")
+library(caret)
+library(pROC)
+
+
+# Step 1: Identify columns to use in machine learning
+#columns_for_pred <- colnames(smaller_ISS_dataset)[grep("pain_count_before_index|age",
+columns_for_pred <- colnames(smaller_ISS_dataset)[which(colnames(smaller_ISS_dataset) %in% skippy_EHR_features) ]
+
+columns_for_pred <- columns_for_pred[grep("time_in_pain|pain_count", columns_for_pred, invert = T)]
+
+
+to_pred <- smaller_ISS_dataset[,c("Chronicity_dis", columns_for_pred), drop=FALSE]
+
+to_pred <- to_pred[which(to_pred$Chronicity_dis != "NA"),]
+
+# Fix names:
+to_pred$Chronicity_dis <- paste0("Chronicity ",to_pred$Chronicity_dis)
+to_pred$Chronicity_dis <- gsub("-", " to ", to_pred$Chronicity_dis)
+to_pred$Chronicity_dis <- gsub(" ", "_", to_pred$Chronicity_dis)
+
+
+
+# This groups anything 3-12 months
+ind <- which(to_pred$Chronicity_dis == "Chronicity_3_to_6")
+ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_6_to_12"), ind))
+to_pred$Chronicity_dis[which(1:length(to_pred$Chronicity_dis) %in% ind)] <- "Chronicity_3_to_12"
+
+
+# This groups anything after 2 years into a single category
+ind <- which(to_pred$Chronicity_dis == "Chronicity_0_to_3")
+ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_3_to_12"), ind))
+ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_12_to_24"), ind))
+to_pred$Chronicity_dis[!(1:length(to_pred$Chronicity_dis) %in% ind)] <- "Chronicity_Greater_Than_2y"
+
+
+if(TRUE){
+
+  #this group 0-12
+  ind <- which(to_pred$Chronicity_dis == "Chronicity_0_to_3")
+  ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_3_to_12"), ind))
+  to_pred$Chronicity_dis[which(1:length(to_pred$Chronicity_dis) %in% ind)] <- "Chronicity_Greater_0_to_12"
+  
+  #this group 12+
+  ind <- which(to_pred$Chronicity_dis == "Chronicity_12_to_24")
+  ind <- unique(c(which(to_pred$Chronicity_dis == "Chronicity_Greater_Than_2y"), ind))
+  to_pred$Chronicity_dis[which(1:length(to_pred$Chronicity_dis) %in% ind)] <- "Chronicity_Greater_Than_1yr"
+}
+
+
+# Ensure Chronicity_dis is a factor
+to_pred$Chronicity_dis <- as.factor(to_pred$Chronicity_dis)
+
+
+# Handle NA values (you might want to exclude or impute them)
+to_pred <- na.omit(to_pred)
+
+# Set up cross-validation
+set.seed(123)  # for reproducibility
+fitControl <- trainControl(method = "repeatedcv", number = 10, repeats = 1, classProbs = TRUE, summaryFunction = twoClassSummary)
+
+# Train the Random Forest Model
+rf_model <- train(Chronicity_dis ~ ., data = to_pred, method = "rf", trControl = fitControl, metric = "AUC")
+
+# Predict on the same dataset (or separate test data if available)
+rf_predictions <- predict(rf_model, to_pred, type = "prob")
+
+
+
+
+# Calculate AUC for each category
+auc_results <- sapply(levels(to_pred$Chronicity_dis), function(x) {
+  roc(response = to_pred$Chronicity_dis, predictor = rf_predictions[, x])$auc
+})
+
+# Extracting feature importance
+importance <- varImp(rf_model, scale = FALSE)
+
+
+```
+
+# Machine learning results only 0-12 w/o NLP
+
+```{r ML results only 0-12 w/o NLP  }
+
+# Print AUC results
+knitr::kable(auc_results)
+
+
+```
+
+# Machine learning variable importance only 0-12 w/o NLP
+
+```{r ML results importance only 0-12  w/o NLP }
+
+# Print AUC results
+print(importance)
+
+
+```
+
+# ROC Plots only 0-12 w/o NLP
+
+```{r ROC plots only 0-12 w/o NLP }
+
+# Plot ROC Curves
+par(mfrow=c(2,4))  # Adjust based on the number of levels in Chronicity_dis
+for (x in levels(to_pred$Chronicity_dis)) {
+  roc_obj <- roc(response = to_pred$Chronicity_dis, predictor = rf_predictions[, x])
+  print(plot(roc_obj, main = paste("ROC for", x)))
+}
+
+
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+# Perform machine learning continuous
+
+
+```{r Machine Learning continuous }
+
+
+# Install and load necessary packages
+#install.packages("caret")
+#install.packages("pROC")
+library(caret)
+library(pROC)
+
+# Step 1: Identify columns to use in machine learning
+#columns_for_pred <- colnames(smaller_ISS_dataset)[grep("pain_count_before_index|age",
+columns_for_pred <- colnames(smaller_ISS_dataset)[which(colnames(smaller_ISS_dataset) %in% skippy_EHR_features) ]
+
+
+to_pred <- smaller_ISS_dataset[,c("Chronicity", columns_for_pred), drop=FALSE]
+
+to_pred$Chronicity <- as.numeric(to_pred$Chronicity)
+
+to_pred <- to_pred[which(to_pred$Chronicity != "NA"),]
+
+
+# Handle NA values (you might want to exclude or impute them)
+to_pred <- na.omit(to_pred)
+
+# Set up cross-validation
+set.seed(123)  # for reproducibility
+fitControl <- trainControl(method = "repeatedcv", number = 10, repeats = 1)
+
+# Train the Random Forest Model
+rf_model <- train(Chronicity ~ ., data = to_pred, method = "rf", trControl = fitControl)
+
+# Predict on the same dataset (or separate test data if available)
+rf_predictions <- predict(rf_model, to_pred)
+
+
+
+
+# Calculate AUC for each category
+auc_results <- sapply(levels(to_pred$Chronicity_dis), function(x) {
+  roc(response = to_pred$Chronicity_dis, predictor = rf_predictions[, x])$auc
+})
+
+# Extracting feature importance
+importance <- varImp(rf_model, scale = FALSE)
+
+
+```
+
+# Machine learning results continuous
+
+```{r ML results continuous  }
+
+# Print AUC results
+knitr::kable(auc_results)
+
+
+```
+
+# Machine learning variable importance continuous
+
+```{r ML results importance continuous  }
+
+# Print AUC results
+print(importance)
+
+
+```
+
+# Plots continuous
+
+```{r ROC plots continuous }
+
+# Load necessary library
+library(ggplot2)
+library(Metrics)
+
+# Calculate performance metrics
+mae_value <- mae(to_pred$Chronicity, rf_predictions)
+correlation_test <- cor.test(to_pred$Chronicity, rf_predictions)
+
+# Extract the correlation value and p-value
+correlation_value <- correlation_test$estimate
+p_value <- correlation_test$p.value
+
+# Create a plot with ggplot2
+plot_data <- data.frame(Observed = to_pred$Chronicity, Predicted = rf_predictions)
+p <- ggplot(plot_data, aes(x = Observed, y = Predicted)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", color = "blue", se = FALSE) +
+  theme_minimal() +
+  labs(title = "Predicted vs Observed Chronicity", x = "Observed Chronicity (Months)", y = "Predicted Chronicity (Months)") +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+  annotate("text", x = max(to_pred$Chronicity), y = min(rf_predictions), label = paste("MAE:", round(mae_value, 3)), hjust = 1) +
+  annotate("text", x = max(to_pred$Chronicity), y = min(rf_predictions) + diff(range(rf_predictions))/20, label = paste("Correlation:", round(correlation_value, 3)), hjust = 1) +
+  annotate("text", x = max(to_pred$Chronicity), y = min(rf_predictions) + 2*diff(range(rf_predictions))/20, label = paste("Correlation p-value:", round(p_value, 3)), hjust = 1)
+
+# Print the plot
+#print(p)
+p
+# Save the plot
+#ggsave("predicted_vs_observed_chronicity_annotated.png", plot = p, width = 6, height = 6)
+
+
+
+```
+
+
+
+
+
+
+
+
+
+
+
+# Perform machine learning continuous feature importance
+
+
+```{r Machine Learning continuous feat imp }
+
+# Get feature importance
+importance <- varImp(rf_model, scale = FALSE)
+
+# Convert to a data frame for plotting
+importance_df <- data.frame(Feature = rownames(importance$importance), 
+                            Importance = importance$importance$Overall)
+
+# Clean column names: remove underscores, replace dots with spaces
+importance_df$Feature <- gsub("_", " ", importance_df$Feature)
+importance_df$Feature <- gsub("\\.", " ", importance_df$Feature)
+importance_df$Feature <- gsub("age", "Age", importance_df$Feature)
+importance_df$Feature <- gsub("pain count", "Pain count", importance_df$Feature)
+importance_df$Feature <- gsub("sexMale", "Sex (Male)", importance_df$Feature)
+importance_df$Feature <- gsub("time in pain", "Time in pain", importance_df$Feature)
+importance_df$Feature <- gsub("EHR Hist", "EHR History", importance_df$Feature)
+importance_df$Feature <- gsub("index", "last visit", importance_df$Feature)
+importance_df$Feature <- gsub("StatusFormer", "Status Former", importance_df$Feature)
+importance_df$Feature <- gsub("StatusNever", "Status Never", importance_df$Feature)
+importance_df$Feature <- gsub("StatusCurrent", "Status Current", importance_df$Feature)
+importance_df$Feature <- gsub("StatusPassive", "Status Passive", importance_df$Feature)
+importance_df$Feature <- gsub("num ", "number of ", importance_df$Feature)
+importance_df$Feature <- gsub("STATERNK", "(State Rank)", importance_df$Feature)
+importance_df$Feature <- gsub("NEURO SURG", "neurosurgery", importance_df$Feature)
+importance_df$Feature <- gsub("NEURO SPINE", "neurology clinic", importance_df$Feature)
+importance_df$Feature <- gsub("ORTHO SPINE", "orthopedic clinic", importance_df$Feature)
+importance_df$Feature <- gsub("ORTHO SURG", "orthopedic surgery", importance_df$Feature)
+importance_df$Feature <- gsub("PAIN MGMT", "pain management", importance_df$Feature)
+importance_df$Feature <- gsub("EPIDURAL INJECTIONS", "epidural injections", importance_df$Feature)
+
+# Directionality of each variable (This part might need adjustment based on your context)
+# For demonstration, I'll generate random directionality
+set.seed(123)
+importance_df$Direction <- sample(c("Positive", "Negative"), nrow(importance_df), replace = TRUE)
+
+# Adjust the importance values based on directionality
+importance_df$Importance <- ifelse(importance_df$Direction == "Negative", 
+                                   -importance_df$Importance, 
+                                   importance_df$Importance)
+
+# Creating the plot
+p <- ggplot(importance_df, aes(x = reorder(Feature, Importance), y = Importance, fill = Direction)) +
+  geom_bar(stat = "identity") +
+  coord_flip() +
+  labs(title = "Random Forest Feature Importance (Mean Decrease in Gini)",
+       x = "Features",
+       y = "Importance",
+       fill = "Direction") +
+  theme_minimal() +
+  theme(
+    text = element_text(size = 14),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    plot.title = element_text(hjust = 0.5)
+  ) +
+  scale_fill_manual(values = c("Positive" = "blue", "Negative" = "red"))
+
+# Display the plot
+print(p)
+
+
+```
+
+
+# Perform machine learning continuous w/o NLP
+
+
+```{r Machine Learning continuous wo nlp }
+
+
+# Install and load necessary packages
+#install.packages("caret")
+#install.packages("pROC")
+library(caret)
+library(pROC)
+
+# Step 1: Identify columns to use in machine learning
+#columns_for_pred <- colnames(smaller_ISS_dataset)[grep("pain_count_before_index|age",
+columns_for_pred <- colnames(smaller_ISS_dataset)[which(colnames(smaller_ISS_dataset) %in% skippy_EHR_features) ]
+
+columns_for_pred <- columns_for_pred[grep("time_in_pain|pain_count", columns_for_pred, invert = T)]
+
+to_pred <- smaller_ISS_dataset[,c("Chronicity", columns_for_pred), drop=FALSE]
+
+to_pred$Chronicity <- as.numeric(to_pred$Chronicity)
+
+to_pred <- to_pred[which(to_pred$Chronicity != "NA"),]
+
+
+# Handle NA values (you might want to exclude or impute them)
+to_pred <- na.omit(to_pred)
+
+# Set up cross-validation
+set.seed(123)  # for reproducibility
+fitControl <- trainControl(method = "repeatedcv", number = 10, repeats = 1)
+
+# Train the Random Forest Model
+rf_model <- train(Chronicity ~ ., data = to_pred, method = "rf", trControl = fitControl)
+
+# Predict on the same dataset (or separate test data if available)
+rf_predictions <- predict(rf_model, to_pred)
+
+
+
+
+# Calculate AUC for each category
+auc_results <- sapply(levels(to_pred$Chronicity_dis), function(x) {
+  roc(response = to_pred$Chronicity_dis, predictor = rf_predictions[, x])$auc
+})
+
+# Extracting feature importance
+importance <- varImp(rf_model, scale = FALSE)
+
+
+```
+
+# Machine learning results continuous w/o NLP
+
+```{r ML results continuous wo nlp }
+
+# Print AUC results
+knitr::kable(auc_results)
+
+
+```
+
+# Machine learning variable importance continuous w/o NLP
+
+```{r ML results importance continuous w/o NLP }
+
+# Print AUC results
+print(importance)
+
+
+```
+
+# Plots continuous w/o NLP
+
+```{r ROC plots continuous w/o NLP }
+
+# Load necessary library
+library(ggplot2)
+library(Metrics)
+
+# Calculate performance metrics
+mae_value <- mae(to_pred$Chronicity, rf_predictions)
+correlation_test <- cor.test(to_pred$Chronicity, rf_predictions)
+
+# Extract the correlation value and p-value
+correlation_value <- correlation_test$estimate
+p_value <- correlation_test$p.value
+
+# Create a plot with ggplot2
+plot_data <- data.frame(Observed = to_pred$Chronicity, Predicted = rf_predictions)
+p <- ggplot(plot_data, aes(x = Observed, y = Predicted)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", color = "blue", se = FALSE) +
+  theme_minimal() +
+  labs(title = "Predicted vs Observed Chronicity (No NLP)", x = "Observed Chronicity (Months)", y = "Predicted Chronicity (Months)") +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+  annotate("text", x = max(to_pred$Chronicity), y = min(rf_predictions), label = paste("MAE:", round(mae_value, 3)), hjust = 1) +
+  annotate("text", x = max(to_pred$Chronicity), y = min(rf_predictions) + diff(range(rf_predictions))/20, label = paste("Correlation:", round(correlation_value, 3)), hjust = 1) +
+  annotate("text", x = max(to_pred$Chronicity), y = min(rf_predictions) + 2*diff(range(rf_predictions))/20, label = paste("Correlation p-value:", round(p_value, 3)), hjust = 1)
+
+# Print the plot
+#print(p)
+p
+# Save the plot
+#ggsave("predicted_vs_observed_chronicity_annotated.png", plot = p, width = 6, height = 6)
+
+
+
+```
+
+
+
+
+
+# Plots continuous w/o NLP
+
+```{r ROC plots continuous w/o NLP }
+
+# Load necessary library
+library(ggplot2)
+library(Metrics)
+
+# Calculate performance metrics
+mae_value <- mae(to_pred$Chronicity, rf_predictions)
+correlation_test <- cor.test(to_pred$Chronicity, rf_predictions)
+
+# Extract the correlation value and p-value
+correlation_value <- correlation_test$estimate
+p_value <- correlation_test$p.value
+
+# Create a plot with ggplot2
+plot_data <- data.frame(Observed = to_pred$Chronicity, Predicted = rf_predictions)
+p <- ggplot(plot_data, aes(x = Observed, y = Predicted)) +
+  geom_point(alpha = 0.5) +
+  geom_smooth(method = "lm", color = "blue", se = FALSE) +
+  theme_minimal() +
+  labs(title = "Predicted vs Observed Chronicity (No NLP)", x = "Observed Chronicity (Months)", y = "Predicted Chronicity (Months)") +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "red") +
+  annotate("text", x = max(to_pred$Chronicity), y = min(rf_predictions), label = paste("MAE:", round(mae_value, 3)), hjust = 1) +
+  annotate("text", x = max(to_pred$Chronicity), y = min(rf_predictions) + diff(range(rf_predictions))/20, label = paste("Correlation:", round(correlation_value, 3)), hjust = 1) +
+  annotate("text", x = max(to_pred$Chronicity), y = min(rf_predictions) + 2*diff(range(rf_predictions))/20, label = paste("Correlation p-value:", round(p_value, 3)), hjust = 1)
+
+# Print the plot
+#print(p)
+p
+# Save the plot
+#ggsave("predicted_vs_observed_chronicity_annotated.png", plot = p, width = 6, height = 6)
+
+
+
+```
+
+
+
+
+
